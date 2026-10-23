@@ -6,7 +6,7 @@ A messaging platform with **two separate products** that share one Firebase back
 
 | Product | Tech | Notes |
 |---|---|---|
-| **Website** (`web/`) | React 18 + TypeScript + Vite | An ordinary responsive website. **Not a PWA** (no manifest, no service worker, no install prompt). CI fails if any PWA artefact appears. |
+| **Website** (`web/`) | React 18 + TypeScript + Vite | An ordinary responsive website. **Not a PWA** (no manifest, no service worker, no install prompt). CI fails if any PWA artifact appears. |
 | **Android app** (`android/`) | Kotlin + Jetpack Compose, native WebRTC | A real native app. **Not a WebView wrapper.** Builds an installable APK. |
 | **Backend** (`firestore.rules`, `firebase.json`) | Firebase Auth + Cloud Firestore | Same data models for both clients: an account made on one works on the other. Photos and videos are **not** stored here: they go to the free host catbox.moe and only the link is saved in the chat. |
 
