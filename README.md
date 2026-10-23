@@ -5,9 +5,11 @@ Pupper is a chat app with a golden retriever puppy mascot. You get two things fr
 - a **website** (it opens in any browser), and
 - an **Android app** (an APK file you install on a phone).
 
-Both use the same Firebase backend, so an account made on one works on the other. You do **not** need to install Node, Android Studio or any other program. You only need a web browser, and GitHub builds everything for you. Plan for about 45 to 60 minutes the first time.
+Both use the same Firebase backend, so an account made on one works on the other. You do **not** need to install Node, Android Studio or any other program. You only need a web browser, and GitHub builds the website and APK for you.
 
-> **Be honest with yourself about one thing:** this code was written without being able to compile or run it. Your first build may fail with a small error. That is normal. Part 10 shows how to get it fixed.
+> **Realtime database note:** this project is built for Firebase Firestore, which is already a real-time database. The app uses Firestore live listeners (`onSnapshot`) for chats, contacts, statuses and messages. If you want to switch to Firebase Realtime Database instead of Firestore, that is a larger rewrite because the data layer and rules are Firestore-specific.
+
+> **Be honest with yourself about one thing:** this code was written without being able to compile or run it. Your first build may fail with a small error. That is normal. Part 10 shows how to get it working.
 
 ---
 
@@ -45,6 +47,8 @@ Words you will see:
 ## Part 2. Create the Firebase project
 
 Firebase menu names change now and then. If a label looks slightly different, pick the closest one.
+
+> **Important:** this app is written for Firebase Firestore, which is a real-time database product. The RESTART code uses live Firestore listeners and document/collection queries. If you are trying to use Firebase Realtime Database instead, you will need to rewrite the data layer in `web/src/lib/api.ts` and the rules/config; this is not a one-line swap.
 
 ### 2.1 Create the project
 
@@ -164,7 +168,7 @@ The top of your repository must show exactly these:
 
 - If you see a single folder called `Pupper` instead, delete the upload and redo it one level deeper.
 - Open `.github`, then `workflows`. You must see `web.yml` and `android.yml`.
-- If `.github` is missing, click **Add file**, then **Create new file**. Type `.github/workflows/web.yml` as the name, paste in the contents of that file from your unzipped folder, and click **Commit changes**. Repeat for `android.yml`.
+- If `.github` is missing, click **Add file**, then **Create new file**. Type `.github/workflows/web.yml` as the name, paste in the contents of that file from your unzipped folder, and click **Commit changes**.
 
 ---
 
@@ -172,7 +176,7 @@ The top of your repository must show exactly these:
 
 1. In your repository click **Settings**.
 2. Click **Secrets and variables**, then **Actions**.
-3. You will see two tabs: **Variables** and **Secrets**. For each row below click **New repository variable** (or **New repository secret**), type the name **exactly** as shown, paste the value, and save.
+3. You will see two tabs: **Variables** and **Secrets**. For each row below click **New repository variable** (or **New repository secret**), type the name **exactly** as shown, paste the value, and save it.
 
 ### Variables tab
 
@@ -257,14 +261,14 @@ Pupper numbers are not real phone numbers. They only work inside Pupper.
 
 ### Changing the app later
 
-- **Edit a file:** open it on GitHub, click the pencil icon, edit, then **Commit changes**. The workflows rebuild by themselves. You can also use **Run workflow**. A new APK appears under **Actions**, **Android**, **Artifacts**.
+- **Edit a file:** open it on GitHub, click the pencil icon, edit, then **Commit changes**. The workflows rebuild by themselves. You can also use **Run workflow**. A new APK appears under **Actions**.
 - **If you change `firestore.rules`:** also paste the new text into Firebase under **Firestore Database**, **Rules**, then click **Publish**. GitHub does not do this for you.
 - **A new APK:** install it over the old one. Nothing is lost, because accounts and chats live in Firebase.
 - **Change the logo:** replace these image files with new ones of the same name and size, then commit them:
   - `web/src/assets/pupper-logo.png` (512 by 512, transparent background)
   - `web/public/favicon.png` (96 by 96)
   - `android/app/src/main/res/drawable-nodpi/pupper_logo.png` (512 by 512)
-  - the five `ic_launcher_foreground.png` files in `android/app/src/main/res/drawable-mdpi` up to `drawable-xxxhdpi` (108, 162, 216, 324 and 432 pixels square, with the logo centred and about 60% of the width)
+  - the five `ic_launcher_foreground.png` files in `android/app/src/main/res/drawable-mdpi` up to `drawable-xxxhdpi` (108, 162, 216, 324 and 432 pixels square, with the logo centred and about 60% of the canvas)
 
 ---
 
@@ -291,21 +295,21 @@ These values can be seen by anyone who inspects the site or app.
 
 ### If photo and video uploads fail on the website
 
-Photos and videos go straight from the app to the free host catbox.moe (up to 200 MB each), and only the link is saved in the chat. The Android app should just work. I could not check whether the host allows uploads from a web page. If the website says the file host "could not be reached, or it blocked this website" while your internet works, use the proxy:
+Photos and videos go straight from the app to the free host catbox.moe (up to 200 MB each), and only the link is saved in the chat. The Android app should just work. I could not check whether the host changes its rules over time.
 
 1. Create a free Cloudflare account.
 2. Click **Workers & Pages**, **Create**, **Create Worker**. Name it `pupper-upload`, then **Deploy**.
 3. Click **Edit code**, replace everything with the contents of `worker/catbox-proxy.js`, then **Deploy**.
-4. Open the Worker's **Settings**, then **Variables and Secrets**. Add `ALLOWED_ORIGIN` with the value `https://YOURUSERNAME.github.io` (no path, no trailing slash). Optionally add `MAX_BYTES` with `100000000`.
+4. Open the Worker's **Settings**, then **Variables and Secrets**. Add `ALLOWED_ORIGIN` with the value `https://YOURUSERNAME.github.io` (no path, no trailing slash). Optionally add `MAX_BYTES` with `100`.
 5. Copy the Worker address, which looks like `https://pupper-upload.YOURNAME.workers.dev`.
 6. In GitHub add **Variables** `VITE_UPLOAD_URL` (that address) and `VITE_MAX_UPLOAD_MB` (`100`). Cloudflare limits request sizes on its free plan, so check the current limit and match it.
 7. Re-run the **Website** workflow.
 
 ### Delete expired statuses sooner
 
-Old statuses are already hidden and removed by the time-to-live rule from step 2.5. To remove them within the hour, deploy the small function in `functions/`. This needs Firebase's pay-as-you-go plan, Node.js and the Firebase CLI on your computer:
+Old statuses are already hidden and removed by the time-to-live rule from step 2.5. To remove them within the hour, deploy the small function in `functions/`. This needs Firebase's pay-as-you-go plan, so check the current pricing before relying on it.
 
-```
+```bash
 npm i -g firebase-tools
 firebase login
 firebase use --add
@@ -355,3 +359,4 @@ Because the code was never compiled before, a first-build error is possible.
 - **Messages are not end-to-end encrypted.** They are protected in transit and by the security rules, but they are readable in your Firebase project.
 - **Nothing here was tested against real devices or a real Firebase project.** Expect to fix small things.
 - Free-tier limits for Firebase, GitHub, Giphy and TURN providers change, so check their current pricing before relying on them.
+
