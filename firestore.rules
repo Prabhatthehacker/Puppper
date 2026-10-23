@@ -1,0 +1,173 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function conv(cid) { return get(/databases/$(database)/documents/conversations/$(cid)).data; }
+    function isMember(cid) { return signedIn() && me() in conv(cid).members; }
+    function validNum(n) { return n is string && n.matches('^[1-9][0-9]{9}$'); }
+    // The number must be claimed for this user in the same batch (uniqueness comes from phoneIndex create-only).
+    function numberClaimed(n) {
+      return validNum(n) && getAfter(/databases/$(database)/documents/phoneIndex/$(n)).data.uid == me();
+    }
+    function changed(keys) { return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys); }
+
+    // ---------- Users (public profile: display name + system-assigned Pupper number) ----------
+    match /users/{userId} {
+      allow get: if signedIn();
+      allow create: if signedIn() && me() == userId
+        && request.resource.data.keys().hasOnly(['displayName', 'phone', 'createdAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 60
+        && numberClaimed(request.resource.data.phone);
+      // The number can be assigned once (null -> number) and never changed afterwards.
+      allow update: if signedIn() && me() == userId
+        && request.resource.data.keys().hasOnly(['displayName', 'phone', 'createdAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 60
+        && (request.resource.data.phone == resource.data.get('phone', null)
+            || (resource.data.get('phone', null) == null && numberClaimed(request.resource.data.phone)));
+      allow delete: if signedIn() && me() == userId;
+
+      match /contacts/{number} {
+        allow read, delete: if signedIn() && me() == userId;
+        allow create, update: if signedIn() && me() == userId
+          && request.resource.data.keys().hasOnly(['number', 'name', 'createdAt'])
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60
+          && request.resource.data.number == number;
+      }
+      // "Delete conversation" is per-user: it records a clearing time, never touches other members' data.
+      match /cleared/{cid} {
+        allow read, write: if signedIn() && me() == userId;
+      }
+    }
+
+    // Pupper number -> uid. get only (no listing). Create-only, so a number can never be taken over.
+    match /phoneIndex/{number} {
+      allow get: if signedIn();
+      allow create: if signedIn() && validNum(number)
+        && request.resource.data.keys().hasOnly(['uid'])
+        && request.resource.data.uid == me()
+        && getAfter(/databases/$(database)/documents/users/$(me())).data.phone == number;
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.uid == me();   // only when deleting your account
+    }
+
+    // ---------- Conversations ----------
+    match /conversations/{cid} {
+      allow get: if signedIn() && (resource == null || me() in resource.data.members);
+      allow list: if signedIn() && me() in resource.data.members;
+
+      allow create: if signedIn()
+        && me() in request.resource.data.members
+        && request.resource.data.createdBy == me()
+        && request.resource.data.type in ['direct', 'group']
+        && request.resource.data.members.size() <= 256
+        && (request.resource.data.type == 'direct'
+              ? (request.resource.data.members.size() == 2 && !('peerNumber' in request.resource.data))
+              : (request.resource.data.name is string && request.resource.data.name.size() > 0
+                 && request.resource.data.name.size() <= 60
+                 && request.resource.data.admins == [me()]));
+
+      allow update: if signedIn() && me() in resource.data.members && (
+        // any member: new last message (+ bump unread counters of others)
+        (changed(['lastMessage', 'updatedAt', 'unread'])
+          && request.resource.data.lastMessage.senderId == me()
+          && request.resource.data.updatedAt == request.time)
+        // any member: reset own unread counter only
+        || (changed(['unread'])
+          && request.resource.data.unread.diff(resource.data.unread).affectedKeys().hasOnly([me()]))
+        // group admins: rename / add members (existing members must stay)
+        || (resource.data.type == 'group' && me() in resource.data.admins
+          && changed(['name', 'members', 'updatedAt'])
+          && request.resource.data.members.hasAll(resource.data.members)
+          && request.resource.data.members.size() <= 256
+          && request.resource.data.name is string
+          && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60)
+        // any group member: leave (removes only self)
+        || (resource.data.type == 'group'
+          && changed(['members', 'admins', 'updatedAt'])
+          && !(me() in request.resource.data.members)
+          && request.resource.data.members.size() == resource.data.members.size() - 1)
+      );
+      allow delete: if false;
+
+      match /messages/{mid} {
+        allow read: if isMember(cid);
+        allow create: if isMember(cid)
+          && request.resource.data.keys().hasOnly(['senderId', 'senderName', 'kind', 'text', 'url', 'createdAt', 'readBy'])
+          && request.resource.data.senderId == me()
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.readBy == [me()]
+          && request.resource.data.senderName is string && request.resource.data.senderName.size() <= 60
+          && request.resource.data.kind in ['text', 'gif', 'image', 'video']
+          && (request.resource.data.kind == 'text'
+                ? (request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 4000)
+                : request.resource.data.url is string
+                  && (request.resource.data.kind == 'gif'
+                        ? request.resource.data.url.matches('^https://media[0-9]*\\.giphy\\.com/.*')
+                        // photos/videos live on the external file host; only its links are accepted
+                        : request.resource.data.url.matches('^https://files\\.catbox\\.moe/[A-Za-z0-9_-]+\\.[A-Za-z0-9]{2,5}$')));
+        // read receipts: a member may add only their own uid to readBy
+        allow update: if isMember(cid)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy'])
+          && request.resource.data.readBy.toSet().difference(resource.data.readBy.toSet()).hasOnly([me()]);
+        allow delete: if false;
+      }
+    }
+
+    // ---------- Status ----------
+    match /statuses/{sid} {
+      // Expiry is enforced for direct reads. Queries (list) are limited to the audience; the client
+      // filters expired rows and a Firestore TTL policy on expiresAt deletes them (see README).
+      allow get: if signedIn() && resource.data.expiresAt > request.time
+        && (resource.data.authorId == me() || me() in resource.data.viewers);
+      allow list: if signedIn() && (resource.data.authorId == me() || me() in resource.data.viewers);
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['authorId', 'authorName', 'kind', 'text', 'viewers', 'createdAt', 'expiresAt'])
+        && request.resource.data.authorId == me()
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.expiresAt > request.time + duration.value(23, 'h')
+        && request.resource.data.expiresAt <= request.time + duration.value(25, 'h')
+        && request.resource.data.kind == 'text'
+        && request.resource.data.viewers is list && request.resource.data.viewers.size() <= 500
+        && request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 700;
+      allow update: if false;
+      allow delete: if signedIn() && resource.data.authorId == me();
+
+      match /views/{viewer} {
+        allow create: if signedIn() && me() == viewer
+          && me() in get(/databases/$(database)/documents/statuses/$(sid)).data.viewers;
+        allow read: if signedIn() && get(/databases/$(database)/documents/statuses/$(sid)).data.authorId == me();
+        allow update, delete: if false;
+      }
+    }
+
+    // ---------- Call signaling (1:1 only) ----------
+    match /calls/{callId} {
+      allow read: if signedIn() && me() in resource.data.participants;
+      allow create: if signedIn()
+        && request.resource.data.callerId == me()
+        && request.resource.data.participants.size() == 2
+        && me() in request.resource.data.participants
+        && request.resource.data.type in ['voice', 'video']
+        && request.resource.data.state == 'ringing'
+        && conv(request.resource.data.conversationId).members.hasAll(request.resource.data.participants);
+      allow update: if signedIn() && me() in resource.data.participants
+        && request.resource.data.callerId == resource.data.callerId
+        && request.resource.data.participants == resource.data.participants
+        && request.resource.data.conversationId == resource.data.conversationId;
+      allow delete: if false;
+
+      match /candidates/{id} {
+        allow read: if signedIn() && me() in get(/databases/$(database)/documents/calls/$(callId)).data.participants;
+        allow create: if signedIn() && request.resource.data.from == me()
+          && me() in get(/databases/$(database)/documents/calls/$(callId)).data.participants;
+      }
+    }
+  }
+}
